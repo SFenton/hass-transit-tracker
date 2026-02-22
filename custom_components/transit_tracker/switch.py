@@ -16,7 +16,6 @@ from .const import (
     DOMAIN,
     CONF_HIDDEN_ROUTES_ENTITY,
     CONF_ROUTE_NAMES_ENTITY,
-    CONF_DEVICE_ID,
 )
 
 _LOGGER = logging.getLogger(__name__)
@@ -59,15 +58,15 @@ async def async_setup_entry(
     config = hass.data[DOMAIN][entry.entry_id]
     hidden_entity_id = config.get(CONF_HIDDEN_ROUTES_ENTITY, "")
     route_names_entity_id = config.get(CONF_ROUTE_NAMES_ENTITY, "")
-    device_id = config.get(CONF_DEVICE_ID, "")
+    device_identifiers = config.get("device_identifiers")
 
     _LOGGER.debug(
-        "Setting up switches: hidden=%s, route_names=%s, device_id=%s",
-        hidden_entity_id, route_names_entity_id, device_id,
+        "Setting up switches: hidden=%s, route_names=%s, device_identifiers=%s",
+        hidden_entity_id, route_names_entity_id, device_identifiers,
     )
 
     coordinator = RouteCoordinator(
-        hass, entry, hidden_entity_id, route_names_entity_id, device_id,
+        hass, entry, hidden_entity_id, route_names_entity_id, device_identifiers,
     )
 
     # Do initial setup
@@ -83,13 +82,13 @@ class RouteCoordinator:
         entry: ConfigEntry,
         hidden_entity_id: str,
         route_names_entity_id: str,
-        device_id: str,
+        device_identifiers: set[tuple[str, str]] | None,
     ) -> None:
         self.hass = hass
         self.entry = entry
         self.hidden_entity_id = hidden_entity_id
         self.route_names_entity_id = route_names_entity_id
-        self.device_id = device_id
+        self.device_identifiers = device_identifiers
         self._switches: dict[str, TransitRouteSwitch] = {}
         self._async_add_entities: AddEntitiesCallback | None = None
 
@@ -151,7 +150,7 @@ class RouteCoordinator:
                     display_name=display_name,
                     is_hidden=route_id in hidden,
                     entry_id=self.entry.entry_id,
-                    device_id=self.device_id,
+                    device_identifiers=self.device_identifiers,
                 )
                 self._switches[route_id] = switch
                 new_switches.append(switch)
@@ -246,14 +245,14 @@ class TransitRouteSwitch(SwitchEntity, RestoreEntity):
         display_name: str,
         is_hidden: bool,
         entry_id: str,
-        device_id: str,
+        device_identifiers: set[tuple[str, str]] | None,
     ) -> None:
         self._coordinator = coordinator
         self._route_id = route_id
         self._display_name = display_name
         self._is_on = not is_hidden
         self._available = True
-        self._device_id = device_id
+        self._device_identifiers = device_identifiers
 
         self._attr_unique_id = f"{entry_id}_route_{route_id}"
         self._attr_name = f"Route {display_name}"
@@ -262,22 +261,11 @@ class TransitRouteSwitch(SwitchEntity, RestoreEntity):
     @property
     def device_info(self) -> DeviceInfo | None:
         """Return device info to link this switch to the ESPHome device."""
-        if not self._device_id:
-            _LOGGER.debug("No device_id for route %s", self._route_id)
+        if not self._device_identifiers:
             return None
-        from homeassistant.helpers import device_registry as dr
-        dev_reg = dr.async_get(self._coordinator.hass)
-        device = dev_reg.async_get(self._device_id)
-        if device and device.identifiers:
-            _LOGGER.debug(
-                "Linking route %s to device %s with identifiers %s",
-                self._route_id, device.name, device.identifiers,
-            )
-            return DeviceInfo(
-                identifiers=device.identifiers,
-            )
-        _LOGGER.debug("Device %s not found or has no identifiers", self._device_id)
-        return None
+        return DeviceInfo(
+            identifiers=self._device_identifiers,
+        )
 
     @property
     def is_on(self) -> bool:
