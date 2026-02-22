@@ -7,6 +7,7 @@ from typing import Any
 from homeassistant.components.switch import SwitchEntity
 from homeassistant.config_entries import ConfigEntry
 from homeassistant.core import HomeAssistant, callback
+from homeassistant.helpers.device_registry import DeviceInfo
 from homeassistant.helpers.entity_platform import AddEntitiesCallback
 from homeassistant.helpers.event import async_track_state_change_event
 from homeassistant.helpers.restore_state import RestoreEntity
@@ -15,6 +16,7 @@ from .const import (
     DOMAIN,
     CONF_HIDDEN_ROUTES_ENTITY,
     CONF_ROUTE_NAMES_ENTITY,
+    CONF_DEVICE_ID,
 )
 
 _LOGGER = logging.getLogger(__name__)
@@ -57,9 +59,10 @@ async def async_setup_entry(
     config = hass.data[DOMAIN][entry.entry_id]
     hidden_entity_id = config.get(CONF_HIDDEN_ROUTES_ENTITY, "")
     route_names_entity_id = config.get(CONF_ROUTE_NAMES_ENTITY, "")
+    device_id = config.get(CONF_DEVICE_ID, "")
 
     coordinator = RouteCoordinator(
-        hass, entry, hidden_entity_id, route_names_entity_id,
+        hass, entry, hidden_entity_id, route_names_entity_id, device_id,
     )
 
     # Do initial setup
@@ -75,11 +78,13 @@ class RouteCoordinator:
         entry: ConfigEntry,
         hidden_entity_id: str,
         route_names_entity_id: str,
+        device_id: str,
     ) -> None:
         self.hass = hass
         self.entry = entry
         self.hidden_entity_id = hidden_entity_id
         self.route_names_entity_id = route_names_entity_id
+        self.device_id = device_id
         self._switches: dict[str, TransitRouteSwitch] = {}
         self._async_add_entities: AddEntitiesCallback | None = None
 
@@ -141,6 +146,7 @@ class RouteCoordinator:
                     display_name=display_name,
                     is_hidden=route_id in hidden,
                     entry_id=self.entry.entry_id,
+                    device_id=self.device_id,
                 )
                 self._switches[route_id] = switch
                 new_switches.append(switch)
@@ -194,6 +200,10 @@ class RouteCoordinator:
             if switch.is_on != should_be_on:
                 switch.set_visibility(should_be_on)
 
+    def count_visible_routes(self) -> int:
+        """Return the number of currently visible (on) routes."""
+        return sum(1 for s in self._switches.values() if s.is_on and s.available)
+
     async def async_update_hidden_routes(self) -> None:
         """Write the current hidden routes to the firmware entity."""
         if not self.hidden_entity_id:
@@ -231,16 +241,32 @@ class TransitRouteSwitch(SwitchEntity, RestoreEntity):
         display_name: str,
         is_hidden: bool,
         entry_id: str,
+        device_id: str,
     ) -> None:
         self._coordinator = coordinator
         self._route_id = route_id
         self._display_name = display_name
         self._is_on = not is_hidden
         self._available = True
+        self._device_id = device_id
 
         self._attr_unique_id = f"{entry_id}_route_{route_id}"
         self._attr_name = f"Route {display_name}"
         self._attr_icon = "mdi:bus"
+
+    @property
+    def device_info(self) -> DeviceInfo | None:
+        """Return device info to link this switch to the ESPHome device."""
+        if not self._device_id:
+            return None
+        from homeassistant.helpers import device_registry as dr
+        dev_reg = dr.async_get(self._coordinator.hass)
+        device = dev_reg.async_get(self._device_id)
+        if device and device.identifiers:
+            return DeviceInfo(
+                identifiers=device.identifiers,
+            )
+        return None
 
     @property
     def is_on(self) -> bool:
@@ -260,6 +286,13 @@ class TransitRouteSwitch(SwitchEntity, RestoreEntity):
 
     async def async_turn_off(self, **kwargs: Any) -> None:
         """Hide this route from the display."""
+        # Enforce at least one route must remain visible
+        if self._coordinator.count_visible_routes() <= 1:
+            _LOGGER.warning(
+                "Cannot hide route %s — at least one route must remain visible",
+                self._route_id,
+            )
+            return
         self._is_on = False
         self.async_write_ha_state()
         await self._coordinator.async_update_hidden_routes()

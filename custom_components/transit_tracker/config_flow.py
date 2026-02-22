@@ -15,6 +15,7 @@ from .const import (
     DOMAIN,
     CONF_HIDDEN_ROUTES_ENTITY,
     CONF_ROUTE_NAMES_ENTITY,
+    CONF_DEVICE_ID,
 )
 
 _LOGGER = logging.getLogger(__name__)
@@ -83,6 +84,7 @@ def _find_transit_tracker_devices(hass: HomeAssistant) -> dict[str, dict[str, st
             "name": device_name,
             CONF_HIDDEN_ROUTES_ENTITY: hidden_entity,
             CONF_ROUTE_NAMES_ENTITY: route_names_entity,
+            CONF_DEVICE_ID: device_id,
         }
 
     return devices
@@ -123,6 +125,7 @@ class TransitTrackerConfigFlow(config_entries.ConfigFlow, domain=DOMAIN):
                 data={
                     CONF_HIDDEN_ROUTES_ENTITY: device_info[CONF_HIDDEN_ROUTES_ENTITY],
                     CONF_ROUTE_NAMES_ENTITY: device_info[CONF_ROUTE_NAMES_ENTITY],
+                    CONF_DEVICE_ID: device_info.get(CONF_DEVICE_ID, ""),
                 },
             )
 
@@ -156,7 +159,9 @@ class TransitTrackerConfigFlow(config_entries.ConfigFlow, domain=DOMAIN):
                 ent_entry = ent_reg.async_get(route_names_entity)
 
                 hidden_entity = ""
+                device_id = ""
                 if ent_entry and ent_entry.device_id:
+                    device_id = ent_entry.device_id
                     for sibling in ent_reg.entities.values():
                         if sibling.device_id != ent_entry.device_id:
                             continue
@@ -176,6 +181,7 @@ class TransitTrackerConfigFlow(config_entries.ConfigFlow, domain=DOMAIN):
                     data={
                         CONF_HIDDEN_ROUTES_ENTITY: hidden_entity,
                         CONF_ROUTE_NAMES_ENTITY: route_names_entity,
+                        CONF_DEVICE_ID: device_id,
                     },
                 )
 
