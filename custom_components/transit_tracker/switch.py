@@ -7,7 +7,6 @@ from typing import Any
 from homeassistant.components.switch import SwitchEntity
 from homeassistant.config_entries import ConfigEntry
 from homeassistant.core import HomeAssistant, callback
-from homeassistant.helpers.device_registry import DeviceInfo
 from homeassistant.helpers.entity_platform import AddEntitiesCallback
 from homeassistant.helpers.event import async_track_state_change_event
 from homeassistant.helpers.restore_state import RestoreEntity
@@ -17,6 +16,18 @@ from .const import (
     CONF_HIDDEN_ROUTES_ENTITY,
     CONF_ROUTE_NAMES_ENTITY,
 )
+
+
+def _parse_route_entry(value: str) -> tuple[str, str]:
+    """Parse a route value that may contain a pipe-separated headsign.
+
+    Input:  'routeName|headsign'  or  'routeName'
+    Output: (route_name, headsign)
+    """
+    if "|" in value:
+        name, headsign = value.split("|", 1)
+        return name.strip(), headsign.strip()
+    return value.strip(), ""
 
 _LOGGER = logging.getLogger(__name__)
 
@@ -31,20 +42,22 @@ def _parse_hidden_routes(hidden: str) -> set[str]:
     return {r.strip() for r in hidden.split(";") if r.strip()}
 
 
-def _parse_route_names(names_str: str) -> dict[str, str]:
-    """Parse route names text_sensor string into a map of route_id -> display name.
+def _parse_route_names(names_str: str) -> dict[str, tuple[str, str]]:
+    """Parse route names text_sensor string.
 
-    Format: routeId=routeName;routeId=routeName;...
+    Format: routeId=routeName|headsign;routeId=routeName|headsign;...
+    Returns: dict of route_id -> (route_name, headsign)
     """
-    names: dict[str, str] = {}
+    names: dict[str, tuple[str, str]] = {}
     if not names_str or names_str in ("unknown", "unavailable"):
         return names
 
     for entry in names_str.split(";"):
         entry = entry.strip()
         if "=" in entry:
-            route_id, route_name = entry.split("=", 1)
-            names[route_id.strip()] = route_name.strip()
+            route_id, value = entry.split("=", 1)
+            route_name, headsign = _parse_route_entry(value)
+            names[route_id.strip()] = (route_name, headsign)
 
     return names
 
@@ -58,15 +71,14 @@ async def async_setup_entry(
     config = hass.data[DOMAIN][entry.entry_id]
     hidden_entity_id = config.get(CONF_HIDDEN_ROUTES_ENTITY, "")
     route_names_entity_id = config.get(CONF_ROUTE_NAMES_ENTITY, "")
-    device_identifiers = config.get("device_identifiers")
 
     _LOGGER.debug(
-        "Setting up switches: hidden=%s, route_names=%s, device_identifiers=%s",
-        hidden_entity_id, route_names_entity_id, device_identifiers,
+        "Setting up switches: hidden=%s, route_names=%s",
+        hidden_entity_id, route_names_entity_id,
     )
 
     coordinator = RouteCoordinator(
-        hass, entry, hidden_entity_id, route_names_entity_id, device_identifiers,
+        hass, entry, hidden_entity_id, route_names_entity_id,
     )
 
     # Do initial setup
@@ -82,13 +94,11 @@ class RouteCoordinator:
         entry: ConfigEntry,
         hidden_entity_id: str,
         route_names_entity_id: str,
-        device_identifiers: set[tuple[str, str]] | None,
     ) -> None:
         self.hass = hass
         self.entry = entry
         self.hidden_entity_id = hidden_entity_id
         self.route_names_entity_id = route_names_entity_id
-        self.device_identifiers = device_identifiers
         self._switches: dict[str, TransitRouteSwitch] = {}
         self._async_add_entities: AddEntitiesCallback | None = None
 
@@ -138,25 +148,25 @@ class RouteCoordinator:
             )
 
     def _create_switches_from_routes(
-        self, route_names: dict[str, str], hidden: set[str]
+        self, route_names: dict[str, tuple[str, str]], hidden: set[str]
     ) -> None:
         """Create switch entities for routes that don't have one yet."""
         new_switches = []
-        for route_id, display_name in route_names.items():
+        for route_id, (route_name, headsign) in route_names.items():
             if route_id not in self._switches:
                 switch = TransitRouteSwitch(
                     coordinator=self,
                     route_id=route_id,
-                    display_name=display_name,
+                    route_name=route_name,
+                    headsign=headsign,
                     is_hidden=route_id in hidden,
                     entry_id=self.entry.entry_id,
-                    device_identifiers=self.device_identifiers,
                 )
                 self._switches[route_id] = switch
                 new_switches.append(switch)
             else:
                 # Update display name if changed
-                self._switches[route_id].update_display_name(display_name)
+                self._switches[route_id].update_display_name(route_name, headsign)
 
         if new_switches and self._async_add_entities:
             _LOGGER.debug("Adding %d new route switches", len(new_switches))
@@ -242,30 +252,28 @@ class TransitRouteSwitch(SwitchEntity, RestoreEntity):
         self,
         coordinator: RouteCoordinator,
         route_id: str,
-        display_name: str,
+        route_name: str,
+        headsign: str,
         is_hidden: bool,
         entry_id: str,
-        device_identifiers: set[tuple[str, str]] | None,
     ) -> None:
         self._coordinator = coordinator
         self._route_id = route_id
-        self._display_name = display_name
+        self._route_name = route_name
+        self._headsign = headsign
         self._is_on = not is_hidden
         self._available = True
-        self._device_identifiers = device_identifiers
 
         self._attr_unique_id = f"{entry_id}_route_{route_id}"
-        self._attr_name = f"Route {display_name}"
+        self._update_name()
         self._attr_icon = "mdi:bus"
 
-    @property
-    def device_info(self) -> DeviceInfo | None:
-        """Return device info to link this switch to the ESPHome device."""
-        if not self._device_identifiers:
-            return None
-        return DeviceInfo(
-            identifiers=self._device_identifiers,
-        )
+    def _update_name(self) -> None:
+        """Set the entity name from route_name and headsign."""
+        if self._headsign:
+            self._attr_name = f"{self._route_name} - {self._headsign}"
+        else:
+            self._attr_name = self._route_name
 
     @property
     def is_on(self) -> bool:
@@ -311,11 +319,12 @@ class TransitRouteSwitch(SwitchEntity, RestoreEntity):
             self.async_write_ha_state()
 
     @callback
-    def update_display_name(self, name: str) -> None:
+    def update_display_name(self, route_name: str, headsign: str) -> None:
         """Update the display name."""
-        if self._display_name != name:
-            self._display_name = name
-            self._attr_name = f"Route {name}"
+        if self._route_name != route_name or self._headsign != headsign:
+            self._route_name = route_name
+            self._headsign = headsign
+            self._update_name()
             self.async_write_ha_state()
 
     async def async_added_to_hass(self) -> None:
