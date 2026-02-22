@@ -33,23 +33,49 @@ def _find_transit_tracker_devices(hass: HomeAssistant) -> dict[str, dict[str, st
             entity.entity_id.endswith("_schedule_config")
             and entity.domain == "text"
         ):
-            # Derive the entity prefix from the schedule entity ID
-            # e.g., text.transit_tracker_schedule_config -> transit_tracker
             prefix = entity.entity_id.replace("text.", "").replace(
                 "_schedule_config", ""
             )
 
-            # Derive related entity IDs
-            hidden_entity = f"text.{prefix}_hidden_routes_config"
-            styles_entity = f"text.{prefix}_route_styles_config"
-            route_names_entity = f"sensor.{prefix}_route_names"
-
             # Use device name if available, otherwise prefix
             device_name = prefix.replace("_", " ").title()
+
+            # Look up sibling entities by device_id for accurate entity IDs
+            hidden_entity = ""
+            styles_entity = ""
+            route_names_entity = ""
+
             if entity.device_id:
                 device = dev_reg.async_get(entity.device_id)
                 if device and device.name:
                     device_name = device.name
+
+                # Find sibling entities on the same device
+                for sibling in registry.entities.values():
+                    if sibling.device_id != entity.device_id:
+                        continue
+                    eid = sibling.entity_id
+                    # Match by unique_id suffix or entity_id patterns
+                    if "hidden_route" in eid and sibling.domain == "text":
+                        hidden_entity = eid
+                    elif "route_styles" in eid and sibling.domain == "text":
+                        styles_entity = eid
+                    elif "route_names" in eid and sibling.domain == "sensor":
+                        route_names_entity = eid
+
+            # Fallback to derivation if device lookup didn't find them
+            if not hidden_entity:
+                hidden_entity = f"text.{prefix}_hidden_routes_config"
+            if not styles_entity:
+                styles_entity = f"text.{prefix}_route_styles_config"
+            if not route_names_entity:
+                route_names_entity = f"sensor.{prefix}_route_names"
+
+            _LOGGER.debug(
+                "Discovered device %s: schedule=%s, hidden=%s, styles=%s, names=%s",
+                device_name, entity.entity_id, hidden_entity, styles_entity,
+                route_names_entity,
+            )
 
             devices[prefix] = {
                 "name": device_name,
@@ -127,15 +153,38 @@ class TransitTrackerConfigFlow(config_entries.ConfigFlow, domain=DOMAIN):
             if state is None:
                 errors[CONF_SCHEDULE_ENTITY] = "entity_not_found"
             else:
-                # Derive related entities from the schedule entity ID
+                # Look up entity in registry to find sibling entities
+                ent_reg = er.async_get(self.hass)
+                ent_entry = ent_reg.async_get(schedule_entity)
+
                 prefix = (
                     schedule_entity.replace("text.", "").replace(
                         "_schedule_config", ""
                     )
                 )
-                hidden_entity = f"text.{prefix}_hidden_routes_config"
-                styles_entity = f"text.{prefix}_route_styles_config"
-                route_names_entity = f"sensor.{prefix}_route_names"
+
+                hidden_entity = ""
+                styles_entity = ""
+                route_names_entity = ""
+
+                if ent_entry and ent_entry.device_id:
+                    for sibling in ent_reg.entities.values():
+                        if sibling.device_id != ent_entry.device_id:
+                            continue
+                        eid = sibling.entity_id
+                        if "hidden_route" in eid and sibling.domain == "text":
+                            hidden_entity = eid
+                        elif "route_styles" in eid and sibling.domain == "text":
+                            styles_entity = eid
+                        elif "route_names" in eid and sibling.domain == "sensor":
+                            route_names_entity = eid
+
+                if not hidden_entity:
+                    hidden_entity = f"text.{prefix}_hidden_routes_config"
+                if not styles_entity:
+                    styles_entity = f"text.{prefix}_route_styles_config"
+                if not route_names_entity:
+                    route_names_entity = f"sensor.{prefix}_route_names"
 
                 return self.async_create_entry(
                     title=prefix.replace("_", " ").title(),
