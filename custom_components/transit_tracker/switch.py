@@ -28,7 +28,7 @@ def _parse_schedule_string(schedule: str) -> list[dict[str, str]]:
     Format: routeId,stopId,timeOffsetSeconds;routeId,stopId,timeOffsetSeconds;...
     """
     routes = []
-    if not schedule:
+    if not schedule or schedule in ("unknown", "unavailable", ""):
         return routes
 
     for entry in schedule.split(";"):
@@ -143,10 +143,20 @@ class RouteCoordinator:
         styles_state = self.hass.states.get(self.styles_entity_id)
         route_names_state = self.hass.states.get(self.route_names_entity_id)
 
+        _LOGGER.debug(
+            "Initial states - schedule: %s, hidden: %s, styles: %s, route_names: %s",
+            schedule_state,
+            hidden_state,
+            styles_state,
+            route_names_state,
+        )
+
         schedule_str = schedule_state.state if schedule_state else ""
         hidden_str = hidden_state.state if hidden_state else ""
         styles_str = styles_state.state if styles_state else ""
         route_names_str = route_names_state.state if route_names_state else ""
+
+        _LOGGER.debug("Schedule string: '%s'", schedule_str)
 
         routes = _parse_schedule_string(schedule_str)
         hidden = _parse_hidden_routes(hidden_str)
@@ -154,6 +164,8 @@ class RouteCoordinator:
         route_names = _parse_route_names(route_names_str)
         if not route_names:
             route_names = _parse_route_styles(styles_str)
+
+        _LOGGER.debug("Parsed %d routes: %s", len(routes), routes)
 
         # Create initial switches
         switches = []
