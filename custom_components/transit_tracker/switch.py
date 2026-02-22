@@ -61,6 +61,11 @@ async def async_setup_entry(
     route_names_entity_id = config.get(CONF_ROUTE_NAMES_ENTITY, "")
     device_id = config.get(CONF_DEVICE_ID, "")
 
+    _LOGGER.debug(
+        "Setting up switches: hidden=%s, route_names=%s, device_id=%s",
+        hidden_entity_id, route_names_entity_id, device_id,
+    )
+
     coordinator = RouteCoordinator(
         hass, entry, hidden_entity_id, route_names_entity_id, device_id,
     )
@@ -258,14 +263,20 @@ class TransitRouteSwitch(SwitchEntity, RestoreEntity):
     def device_info(self) -> DeviceInfo | None:
         """Return device info to link this switch to the ESPHome device."""
         if not self._device_id:
+            _LOGGER.debug("No device_id for route %s", self._route_id)
             return None
         from homeassistant.helpers import device_registry as dr
         dev_reg = dr.async_get(self._coordinator.hass)
         device = dev_reg.async_get(self._device_id)
         if device and device.identifiers:
+            _LOGGER.debug(
+                "Linking route %s to device %s with identifiers %s",
+                self._route_id, device.name, device.identifiers,
+            )
             return DeviceInfo(
                 identifiers=device.identifiers,
             )
+        _LOGGER.debug("Device %s not found or has no identifiers", self._device_id)
         return None
 
     @property
