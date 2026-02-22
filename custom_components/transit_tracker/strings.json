@@ -14,9 +14,9 @@
       },
       "manual": {
         "title": "Manual Configuration",
-        "description": "No Transit Tracker devices were auto-discovered. Enter the entity ID of your schedule_config text entity (e.g., `{example}`).",
+        "description": "No Transit Tracker devices were auto-discovered. Enter the entity ID of your route_names sensor (e.g., `{example}`).",
         "data": {
-          "schedule_entity": "Schedule Config Entity ID"
+          "route_names_entity": "Route Names Sensor Entity ID"
         }
       }
     },
