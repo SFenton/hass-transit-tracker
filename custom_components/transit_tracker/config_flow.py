@@ -9,6 +9,7 @@ import voluptuous as vol
 from homeassistant import config_entries
 from homeassistant.core import HomeAssistant
 from homeassistant.helpers import entity_registry as er
+from homeassistant.helpers import device_registry as dr
 
 from .const import (
     DOMAIN,
@@ -24,6 +25,7 @@ _LOGGER = logging.getLogger(__name__)
 def _find_transit_tracker_devices(hass: HomeAssistant) -> dict[str, dict[str, str]]:
     """Find ESPHome Transit Tracker devices by looking for schedule_config entities."""
     registry = er.async_get(hass)
+    dev_reg = dr.async_get(hass)
     devices: dict[str, dict[str, str]] = {}
 
     for entity in registry.entities.values():
@@ -32,7 +34,7 @@ def _find_transit_tracker_devices(hass: HomeAssistant) -> dict[str, dict[str, st
             and entity.domain == "text"
         ):
             # Derive the entity prefix from the schedule entity ID
-            # e.g., text.transit_tracker_abcdef_schedule_config -> transit_tracker_abcdef
+            # e.g., text.transit_tracker_schedule_config -> transit_tracker
             prefix = entity.entity_id.replace("text.", "").replace(
                 "_schedule_config", ""
             )
@@ -45,7 +47,6 @@ def _find_transit_tracker_devices(hass: HomeAssistant) -> dict[str, dict[str, st
             # Use device name if available, otherwise prefix
             device_name = prefix.replace("_", " ").title()
             if entity.device_id:
-                dev_reg = hass.helpers.device_registry.async_get(hass)
                 device = dev_reg.async_get(entity.device_id)
                 if device and device.name:
                     device_name = device.name
@@ -70,12 +71,8 @@ class TransitTrackerConfigFlow(config_entries.ConfigFlow, domain=DOMAIN):
         self, user_input: dict[str, Any] | None = None
     ) -> config_entries.ConfigFlowResult:
         """Handle the initial step."""
-        errors: dict[str, str] = {}
-
-        # Try auto-discovery first
-        devices = await self.hass.async_add_executor_job(
-            _find_transit_tracker_devices, self.hass
-        )
+        # Try auto-discovery (called directly, not via executor)
+        devices = _find_transit_tracker_devices(self.hass)
 
         if devices:
             return await self.async_step_select_device(devices=devices)
@@ -90,9 +87,7 @@ class TransitTrackerConfigFlow(config_entries.ConfigFlow, domain=DOMAIN):
     ) -> config_entries.ConfigFlowResult:
         """Let the user select a discovered device."""
         if devices is None:
-            devices = await self.hass.async_add_executor_job(
-                _find_transit_tracker_devices, self.hass
-            )
+            devices = _find_transit_tracker_devices(self.hass)
 
         if user_input is not None:
             selected = user_input["device"]
