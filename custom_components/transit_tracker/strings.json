@@ -1,0 +1,27 @@
+{
+  "config": {
+    "step": {
+      "user": {
+        "title": "Transit Tracker",
+        "description": "Set up per-route visibility controls for your Transit Tracker."
+      },
+      "select_device": {
+        "title": "Select Device",
+        "description": "Select the Transit Tracker device to manage.",
+        "data": {
+          "device": "Transit Tracker Device"
+        }
+      },
+      "manual": {
+        "title": "Manual Configuration",
+        "description": "No Transit Tracker devices were auto-discovered. Enter the entity ID of your schedule_config text entity (e.g., `{example}`).",
+        "data": {
+          "schedule_entity": "Schedule Config Entity ID"
+        }
+      }
+    },
+    "error": {
+      "entity_not_found": "Entity not found. Please check the entity ID."
+    }
+  }
+}
