@@ -33,31 +33,40 @@ _LOGGER = logging.getLogger(__name__)
 
 
 def _parse_hidden_routes(hidden: str) -> set[str]:
-    """Parse hidden routes text into a set of route IDs.
+    """Parse hidden routes text into a set of composite keys.
 
-    Format: routeId;routeId;...
+    Format: compositeKey;compositeKey;...
+    Where compositeKey is routeId:headsign[:stopId]
     """
     if not hidden or hidden in ("unknown", "unavailable"):
         return set()
     return {r.strip() for r in hidden.split(";") if r.strip()}
 
 
-def _parse_route_names(names_str: str) -> dict[str, tuple[str, str]]:
+def _parse_route_names(names_str: str) -> dict[str, tuple[str, str, str]]:
     """Parse route names text_sensor string.
 
-    Format: routeId=routeName|headsign;routeId=routeName|headsign;...
-    Returns: dict of route_id -> (route_name, headsign)
+    Format: compositeKey=routeName|headsign;...
+    Where compositeKey is routeId:headsign[:stopId]
+
+    Returns: dict of composite_key -> (route_name, headsign, stop_id)
     """
-    names: dict[str, tuple[str, str]] = {}
+    names: dict[str, tuple[str, str, str]] = {}
     if not names_str or names_str in ("unknown", "unavailable"):
         return names
 
     for entry in names_str.split(";"):
         entry = entry.strip()
         if "=" in entry:
-            route_id, value = entry.split("=", 1)
+            composite_key, value = entry.split("=", 1)
+            composite_key = composite_key.strip()
             route_name, headsign = _parse_route_entry(value)
-            names[route_id.strip()] = (route_name, headsign)
+
+            # Extract stop_id from composite key (routeId:headsign[:stopId])
+            key_parts = composite_key.split(":")
+            stop_id = key_parts[2] if len(key_parts) >= 3 else ""
+
+            names[composite_key] = (route_name, headsign, stop_id)
 
     return names
 
@@ -148,34 +157,35 @@ class RouteCoordinator:
             )
 
     def _create_switches_from_routes(
-        self, route_names: dict[str, tuple[str, str]], hidden: set[str]
+        self, route_names: dict[str, tuple[str, str, str]], hidden: set[str]
     ) -> None:
         """Create switch entities for routes that don't have one yet."""
         new_switches = []
-        for route_id, (route_name, headsign) in route_names.items():
-            if route_id not in self._switches:
+        for composite_key, (route_name, headsign, stop_id) in route_names.items():
+            if composite_key not in self._switches:
                 switch = TransitRouteSwitch(
                     coordinator=self,
-                    route_id=route_id,
+                    composite_key=composite_key,
                     route_name=route_name,
                     headsign=headsign,
-                    is_hidden=route_id in hidden,
+                    stop_id=stop_id,
+                    is_hidden=composite_key in hidden,
                     entry_id=self.entry.entry_id,
                 )
-                self._switches[route_id] = switch
+                self._switches[composite_key] = switch
                 new_switches.append(switch)
             else:
                 # Update display name if changed
-                self._switches[route_id].update_display_name(route_name, headsign)
+                self._switches[composite_key].update_display_name(route_name, headsign)
 
         if new_switches and self._async_add_entities:
             _LOGGER.debug("Adding %d new route switches", len(new_switches))
             self._async_add_entities(new_switches)
 
         # Mark routes not in current route_names as unavailable
-        current_route_ids = set(route_names.keys())
-        for route_id, switch in self._switches.items():
-            if route_id not in current_route_ids:
+        current_keys = set(route_names.keys())
+        for key, switch in self._switches.items():
+            if key not in current_keys:
                 switch.set_available(False)
             else:
                 switch.set_available(True)
@@ -209,8 +219,8 @@ class RouteCoordinator:
             return
 
         hidden = _parse_hidden_routes(new_state.state)
-        for route_id, switch in self._switches.items():
-            should_be_on = route_id not in hidden
+        for composite_key, switch in self._switches.items():
+            should_be_on = composite_key not in hidden
             if switch.is_on != should_be_on:
                 switch.set_visibility(should_be_on)
 
@@ -225,8 +235,8 @@ class RouteCoordinator:
             return
 
         hidden_ids = [
-            route_id
-            for route_id, switch in self._switches.items()
+            composite_key
+            for composite_key, switch in self._switches.items()
             if not switch.is_on
         ]
         hidden_str = ";".join(hidden_ids)
@@ -251,20 +261,24 @@ class TransitRouteSwitch(SwitchEntity, RestoreEntity):
     def __init__(
         self,
         coordinator: RouteCoordinator,
-        route_id: str,
+        composite_key: str,
         route_name: str,
         headsign: str,
+        stop_id: str,
         is_hidden: bool,
         entry_id: str,
     ) -> None:
         self._coordinator = coordinator
-        self._route_id = route_id
+        self._composite_key = composite_key
         self._route_name = route_name
         self._headsign = headsign
+        self._stop_id = stop_id
         self._is_on = not is_hidden
         self._available = True
 
-        self._attr_unique_id = f"{entry_id}_route_{route_id}"
+        # Build a slug-safe unique_id from the composite key
+        slug = composite_key.replace(":", "_").replace(" ", "_").lower()
+        self._attr_unique_id = f"{entry_id}_route_{slug}"
         self._update_name()
         self._attr_icon = "mdi:bus"
 
@@ -297,7 +311,7 @@ class TransitRouteSwitch(SwitchEntity, RestoreEntity):
         if self._coordinator.count_visible_routes() <= 1:
             _LOGGER.warning(
                 "Cannot hide route %s — at least one route must remain visible",
-                self._route_id,
+                self._composite_key,
             )
             return
         self._is_on = False
