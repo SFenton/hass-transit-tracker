@@ -65,45 +65,23 @@ def _parse_route_names(names_str: str) -> dict[str, tuple[str, str]]:
     return names
 
 
-def _parse_paginated_route(
-    state_str: str,
-) -> tuple[int, int, str, str, str] | None:
-    """Parse a paginated route update from the text_sensor.
+def _parse_single_route(state_str: str) -> tuple[str, str, str] | None:
+    """Parse a single route update from the text_sensor.
 
-    Format: index/total:compositeKey=routeName|headsign
-    Returns: (index, total, composite_key, route_name, headsign) or None
+    Format: compositeKey=routeName|headsign
+    Returns: (composite_key, route_name, headsign) or None
     """
     if not state_str or state_str in ("unknown", "unavailable"):
         return None
 
-    # The prefix is "index/total" before the first colon
-    colon_pos = state_str.find(":")
-    if colon_pos == -1:
+    if "=" not in state_str:
         return None
 
-    prefix = state_str[:colon_pos]
-    if "/" not in prefix:
-        return None
-
-    idx_parts = prefix.split("/")
-    if len(idx_parts) != 2:
-        return None
-
-    try:
-        index = int(idx_parts[0])
-        total = int(idx_parts[1])
-    except ValueError:
-        return None
-
-    rest = state_str[colon_pos + 1:]
-    if "=" not in rest:
-        return None
-
-    composite_key, value = rest.split("=", 1)
+    composite_key, value = state_str.split("=", 1)
     composite_key = composite_key.strip()
     route_name, headsign = _parse_route_entry(value)
 
-    return index, total, composite_key, route_name, headsign
+    return composite_key, route_name, headsign
 
 
 async def async_setup_entry(
@@ -144,8 +122,6 @@ class RouteCoordinator:
         self.hidden_entity_id = hidden_entity_id
         self.route_names_entity_id = route_names_entity_id
         self._switches: dict[str, TransitRouteSwitch] = {}
-        self._pending_routes: dict[str, tuple[str, str]] = {}
-        self._expected_total: int = 0
         self._async_add_entities: AddEntitiesCallback | None = None
 
     async def async_initial_setup(
@@ -171,16 +147,13 @@ class RouteCoordinator:
 
         hidden = _parse_hidden_routes(hidden_str)
 
-        # Try paginated format first
-        parsed = _parse_paginated_route(route_names_str)
+        # Try single-route format first
+        parsed = _parse_single_route(route_names_str)
         if parsed is not None:
-            # Current state is a single paginated entry;
-            # full route set will arrive on the next schedule update
-            _LOGGER.debug(
-                "Route names sensor has paginated format, waiting for full update cycle"
-            )
+            composite_key, route_name, headsign = parsed
+            self._upsert_switch(composite_key, route_name, headsign, hidden)
         else:
-            # Legacy single-string format
+            # Legacy multi-route format
             route_names = _parse_route_names(route_names_str)
             _LOGGER.debug(
                 "Parsed %d routes from route_names: %s",
@@ -237,6 +210,31 @@ class RouteCoordinator:
             else:
                 switch.set_available(True)
 
+    def _upsert_switch(
+        self,
+        composite_key: str,
+        route_name: str,
+        headsign: str,
+        hidden: set[str],
+    ) -> None:
+        """Create or update a single switch for a route."""
+        if composite_key in self._switches:
+            self._switches[composite_key].update_display_name(route_name, headsign)
+            self._switches[composite_key].set_available(True)
+        else:
+            switch = TransitRouteSwitch(
+                coordinator=self,
+                composite_key=composite_key,
+                route_name=route_name,
+                headsign=headsign,
+                is_hidden=composite_key in hidden,
+                entry_id=self.entry.entry_id,
+            )
+            self._switches[composite_key] = switch
+            if self._async_add_entities:
+                _LOGGER.debug("Adding route switch: %s", composite_key)
+                self._async_add_entities([switch])
+
     @callback
     def _handle_route_names_change(self, event) -> None:
         """Handle route_names sensor state changes — create/update switches."""
@@ -246,30 +244,18 @@ class RouteCoordinator:
 
         state_str = new_state.state
 
-        # Try paginated format: index/total:compositeKey=routeName|headsign
-        parsed = _parse_paginated_route(state_str)
+        # Single-route format: compositeKey=routeName|headsign
+        parsed = _parse_single_route(state_str)
         if parsed is not None:
-            index, total, composite_key, route_name, headsign = parsed
-
-            # Index 0 starts a new batch
-            if index == 0:
-                self._pending_routes = {}
-                self._expected_total = total
-
-            self._pending_routes[composite_key] = (route_name, headsign)
-            _LOGGER.debug("Received route %d/%d: %s", index + 1, total, composite_key)
-
-            # When all routes are received, create/update switches
-            if len(self._pending_routes) >= self._expected_total:
-                _LOGGER.debug("All %d routes received, updating switches", total)
-                hidden_state = self.hass.states.get(self.hidden_entity_id)
-                hidden = _parse_hidden_routes(
-                    hidden_state.state if hidden_state else ""
-                )
-                self._create_switches_from_routes(self._pending_routes, hidden)
+            composite_key, route_name, headsign = parsed
+            hidden_state = self.hass.states.get(self.hidden_entity_id)
+            hidden = _parse_hidden_routes(
+                hidden_state.state if hidden_state else ""
+            )
+            self._upsert_switch(composite_key, route_name, headsign, hidden)
             return
 
-        # Legacy single-string format fallback
+        # Legacy multi-route format fallback
         route_names = _parse_route_names(state_str)
         if not route_names:
             return
